@@ -6,6 +6,7 @@ import threading
 from datetime import datetime
 import os
 import sys
+import torch
 
 class CameraDetectionSystem:
     def __init__(self):
@@ -70,27 +71,25 @@ class CameraDetectionSystem:
         except Exception as e:
             print(f"❌ Face detector error: {e}")
         
-        # Try MediaPipe Hands with error handling
+        # Try YOLOv8 Pose for hand detection
         try:
-            import mediapipe as mp
+            from ultralytics import YOLO
             
-            # Try with minimal configuration first
-            self.mp_hands = mp.solutions.hands
-            self.hands = self.mp_hands.Hands(
-                static_image_mode=False,
-                max_num_hands=10,
-                model_complexity=0,  # Use lightest model
-                min_detection_confidence=0.5,
-                min_tracking_confidence=0.5
-            )
-            self.mp_drawing = mp.solutions.drawing_utils
+            # Load YOLOv8 pose model for hand/keypoint detection
+            self.yolo_pose = YOLO('yolov8n-pose.pt')  # Nano pose model
             self.hands_detector_available = True
-            print("✅ Hand detector (MediaPipe) - OK")
+            self.hand_detection_method = 'yolov8_pose'
+            print("✅ Hand detector (YOLOv8 Pose) - OK")
             
-        except Exception as e:
-            print(f"❌ Hand detector (MediaPipe) error: {e}")
-            print("📝 Try: pip install --upgrade mediapipe")
+        except ImportError:
+            print("❌ YOLOv8 not available - install with: pip install ultralytics")
             self.hands_detector_available = False
+            self.hand_detection_method = 'fallback'
+        except Exception as e:
+            print(f"❌ Hand detector (YOLOv8 Pose) error: {e}")
+            print("📝 Trying fallback hand detection...")
+            self.hands_detector_available = False
+            self.hand_detection_method = 'fallback'
             
         # Load phone detection model
         self.load_phone_detector()
@@ -103,6 +102,7 @@ class CameraDetectionSystem:
         ])
         
         print(f"\n📊 Detection Summary: {working_models}/3 models loaded")
+        print(f"🤲 Hand detection method: {self.hand_detection_method}")
         
         if working_models == 0:
             print("⚠️ WARNING: No detection models loaded successfully!")
@@ -116,7 +116,13 @@ class CameraDetectionSystem:
             # Try YOLOv8 first (best performance)
             try:
                 from ultralytics import YOLO
-                self.yolo_model = YOLO('yolov8n.pt')  # Nano version for speed
+                # Use the same YOLO model for both hands and phones if possible
+                if hasattr(self, 'yolo_pose'):
+                    # Try to use a general YOLOv8 model for phone detection
+                    self.yolo_model = YOLO('yolov8n.pt')  # General object detection model
+                else:
+                    self.yolo_model = YOLO('yolov8n.pt')  # Nano version for speed
+                    
                 self.model_type = 'yolov8'
                 self.phone_detector_available = True
                 print("✅ Phone detector (YOLOv8n) - OK")
@@ -287,67 +293,202 @@ class CameraDetectionSystem:
             self.detection_data['pose'] = 'Forward'
     
     def detect_hands(self, frame):
-        """Detect hands using MediaPipe or fallback"""
+        """Detect hands using YOLOv8 Pose or fallback method"""
         if not self.hands_detector_available:
-            self.detection_data['no_of_hands'] = 0
+            self.detect_hands_fallback(frame)
             return
         
+        if self.hand_detection_method == 'yolov8_pose':
+            self.detect_hands_yolov8_pose(frame)
+        else:
+            self.detect_hands_fallback(frame)
+    
+    def detect_hands_yolov8_pose(self, frame):
+        """Detect hands using YOLOv8 pose estimation"""
         try:
-            # Convert BGR to RGB
-            rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            # Run YOLOv8 pose detection
+            results = self.yolo_pose(frame, verbose=False)
             
-            # Process the frame
-            results = self.hands.process(rgb_frame)
+            hand_count = 0
+            detected_hands = []
             
-            # Count detected hands with validation
-            validated_hands = 0
-            
-            if results.multi_hand_landmarks and results.multi_handedness:
-                for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
-                    # Get confidence score
-                    confidence = handedness.classification[0].score
+            for result in results:
+                # Get pose keypoints
+                if result.keypoints is not None and len(result.keypoints.xy) > 0:
+                    # Get keypoints for the first person (most confident)
+                    keypoints = result.keypoints.xy[0]  # Shape: [17, 2] for 17 COCO keypoints
+                    confidence = result.keypoints.conf[0] if result.keypoints.conf is not None else None
                     
-                    # Only count hands with high confidence
-                    if confidence > 0.7:
-                        h, w, _ = frame.shape
+                    # COCO pose keypoints indices:
+                    # 9: left_wrist, 10: right_wrist
+                    # 7: left_elbow, 8: right_elbow (for additional validation)
+                    
+                    h, w, _ = frame.shape
+                    
+                    # Check left wrist (index 9)
+                    if len(keypoints) > 9:
+                        left_wrist = keypoints[9]
+                        left_wrist_conf = confidence[9] if confidence is not None else 0.5
                         
-                        # Calculate hand bounding box
-                        landmarks = []
-                        for landmark in hand_landmarks.landmark:
-                            x = int(landmark.x * w)
-                            y = int(landmark.y * h)
-                            landmarks.append((x, y))
-                        
-                        x_coords = [point[0] for point in landmarks]
-                        y_coords = [point[1] for point in landmarks]
-                        
-                        x_min, x_max = min(x_coords), max(x_coords)
-                        y_min, y_max = min(y_coords), max(y_coords)
-                        
-                        # Validate hand size
-                        hand_area = (x_max - x_min) * (y_max - y_min)
-                        
-                        if 1000 < hand_area < 30000:  # Reasonable hand size
-                            validated_hands += 1
+                        # Check if wrist is detected with good confidence
+                        if (not torch.isnan(left_wrist).any() and 
+                            left_wrist[0] > 0 and left_wrist[1] > 0 and
+                            left_wrist_conf > 0.3):  # Lower threshold for wrist detection
                             
-                            # Draw hand landmarks
-                            self.mp_drawing.draw_landmarks(
-                                frame, hand_landmarks, self.mp_hands.HAND_CONNECTIONS,
-                                self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=2),
-                                self.mp_drawing.DrawingSpec(color=(255, 0, 0), thickness=2))
+                            x, y = int(left_wrist[0]), int(left_wrist[1])
                             
-                            # Draw bounding box
-                            cv2.rectangle(frame, (x_min-5, y_min-5), (x_max+5, y_max+5), (255, 0, 0), 2)
+                            # Validate wrist is within frame
+                            if 0 < x < w and 0 < y < h:
+                                hand_count += 1
+                                detected_hands.append({
+                                    'type': 'Left',
+                                    'x': x,
+                                    'y': y,
+                                    'confidence': float(left_wrist_conf)
+                                })
+                                
+                                # Draw left wrist/hand detection
+                                cv2.circle(frame, (x, y), 12, (255, 0, 0), 3)
+                                cv2.circle(frame, (x, y), 25, (255, 0, 0), 2)
+                                cv2.putText(frame, f'L Hand ({left_wrist_conf:.2f})', 
+                                           (x-40, y-30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
+                    
+                    # Check right wrist (index 10)
+                    if len(keypoints) > 10:
+                        right_wrist = keypoints[10]
+                        right_wrist_conf = confidence[10] if confidence is not None else 0.5
+                        
+                        # Check if wrist is detected with good confidence
+                        if (not torch.isnan(right_wrist).any() and 
+                            right_wrist[0] > 0 and right_wrist[1] > 0 and
+                            right_wrist_conf > 0.3):  # Lower threshold for wrist detection
                             
-                            # Hand type
-                            hand_type = handedness.classification[0].label
-                            cv2.putText(frame, f'{hand_type} ({confidence:.2f})', 
-                                       (x_min, y_min-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
+                            x, y = int(right_wrist[0]), int(right_wrist[1])
+                            
+                            # Validate wrist is within frame
+                            if 0 < x < w and 0 < y < h:
+                                hand_count += 1
+                                detected_hands.append({
+                                    'type': 'Right',
+                                    'x': x,
+                                    'y': y,
+                                    'confidence': float(right_wrist_conf)
+                                })
+                                
+                                # Draw right wrist/hand detection
+                                cv2.circle(frame, (x, y), 12, (0, 0, 255), 3)
+                                cv2.circle(frame, (x, y), 25, (0, 0, 255), 2)
+                                cv2.putText(frame, f'R Hand ({right_wrist_conf:.2f})', 
+                                           (x-40, y-30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+                    
+                    # Optional: Draw full pose skeleton for debugging
+                    if len(detected_hands) > 0:
+                        # Draw some pose connections for context
+                        self.draw_pose_connections(frame, keypoints, confidence)
+                    
+                    break  # Only process first person
             
-            self.detection_data['no_of_hands'] = min(validated_hands, 10)  # Max 2 hands
+            self.detection_data['no_of_hands'] = min(hand_count, 10)  # Reasonable max
+            
+            # Debug output
+            # if hand_count > 0:
+            #     print(f"🤲 YOLOv8 detected {hand_count} hands: {[h['type'] for h in detected_hands]}")
             
         except Exception as e:
-            print(f"Hand detection error: {e}")
+            print(f"YOLOv8 hand detection error: {e}")
+            # Fallback to alternative method
+            self.detect_hands_fallback(frame)
+    
+    def draw_pose_connections(self, frame, keypoints, confidence=None):
+        """Draw basic pose skeleton for context"""
+        try:
+            # Define some basic connections (simplified)
+            connections = [
+                (5, 7),   # left_shoulder to left_elbow
+                (7, 9),   # left_elbow to left_wrist
+                (6, 8),   # right_shoulder to right_elbow
+                (8, 10),  # right_elbow to right_wrist
+                (5, 6),   # shoulder connection
+            ]
+            
+            for start_idx, end_idx in connections:
+                if (len(keypoints) > max(start_idx, end_idx) and
+                    not torch.isnan(keypoints[start_idx]).any() and
+                    not torch.isnan(keypoints[end_idx]).any()):
+                    
+                    start_point = (int(keypoints[start_idx][0]), int(keypoints[start_idx][1]))
+                    end_point = (int(keypoints[end_idx][0]), int(keypoints[end_idx][1]))
+                    
+                    # Only draw if both points are valid
+                    if (start_point[0] > 0 and start_point[1] > 0 and
+                        end_point[0] > 0 and end_point[1] > 0):
+                        cv2.line(frame, start_point, end_point, (0, 255, 255), 2)
+        
+        except Exception as e:
+            pass  # Ignore drawing errors
+    
+    def detect_hands_fallback(self, frame):
+        """Fallback hand detection using skin color and contours"""
+        try:
+            # Convert to HSV for skin detection
+            hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            
+            # Define skin color range in HSV
+            lower_skin = np.array([0, 20, 70], dtype=np.uint8)
+            upper_skin = np.array([20, 255, 255], dtype=np.uint8)
+            mask1 = cv2.inRange(hsv, lower_skin, upper_skin)
+            
+            # Additional skin range
+            lower_skin2 = np.array([160, 20, 70], dtype=np.uint8)
+            upper_skin2 = np.array([180, 255, 255], dtype=np.uint8)
+            mask2 = cv2.inRange(hsv, lower_skin2, upper_skin2)
+            
+            # Combine masks
+            skin_mask = cv2.bitwise_or(mask1, mask2)
+            
+            # Morphological operations
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+            skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel)
+            skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_CLOSE, kernel)
+            
+            # Find contours
+            contours, _ = cv2.findContours(skin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            hand_count = 0
+            
+            for contour in contours:
+                area = cv2.contourArea(contour)
+                
+                # Filter by area (hand-like size)
+                if 1500 < area < 25000:
+                    x, y, w, h = cv2.boundingRect(contour)
+                    aspect_ratio = h / w if w > 0 else 0
+                    
+                    # Hand-like criteria
+                    if 0.7 < aspect_ratio < 2.5:
+                        # Additional validation using convex hull
+                        hull = cv2.convexHull(contour, returnPoints=False)
+                        if len(hull) > 3:
+                            defects = cv2.convexityDefects(contour, hull)
+                            
+                            if defects is not None and len(defects) > 1:
+                                hand_count += 1
+                                
+                                # Draw hand detection
+                                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 255), 2)
+                                cv2.putText(frame, f'Hand {hand_count} (Fallback)', 
+                                           (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
+                                
+                                # Draw contour
+                                cv2.drawContours(frame, [contour], -1, (255, 255, 0), 2)
+            
+            self.detection_data['no_of_hands'] = min(hand_count, 10)
+            
+            if hand_count > 0:
+                print(f"🤲 Fallback detected {hand_count} hands")
+            
+        except Exception as e:
+            print(f"Fallback hand detection error: {e}")
             self.detection_data['no_of_hands'] = 0
     
     def detect_phone(self, frame):
@@ -646,6 +787,7 @@ class CameraDetectionSystem:
         print("  SPACE - Save current data")
         print("  'a' - Toggle auto capture")
         print("  'p' - Print detection data")
+        print("  'h' - Toggle hand detection method")
         print("  'q' - Quit")
         print("\n▶️ Detection started...")
         
@@ -680,7 +822,7 @@ class CameraDetectionSystem:
             status_info = [
                 f"FPS: {fps}",
                 f"Face: {'✅' if self.face_detector_available else '❌'} ({self.detection_data['no_of_face']})",
-                f"Hands: {'✅' if self.hands_detector_available else '❌'} ({self.detection_data['no_of_hands']})",
+                f"Hands: {'✅' if self.hands_detector_available else '❌'} ({self.detection_data['no_of_hands']}) [{self.hand_detection_method}]",
                 f"Phone: {'✅' if self.phone_detector_available else '❌'} ({'Yes' if self.detection_data['phone'] else 'No'})",
                 f"Pose: {self.detection_data['pose']}",
                 f"Auto: {'ON' if self.auto_capture else 'OFF'}",
@@ -693,7 +835,7 @@ class CameraDetectionSystem:
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
             # Show frame
-            cv2.imshow('AI Detection System - Fixed Version', frame)
+            cv2.imshow('AI Detection System - YOLOv8 Hand Detection', frame)
             
             # Handle keyboard input
             key = cv2.waitKey(1) & 0xFF
@@ -709,6 +851,17 @@ class CameraDetectionSystem:
                     self.start_auto_capture()
             elif key == ord('p'):
                 self.print_detection_summary()
+            elif key == ord('h'):
+                # Toggle hand detection method
+                if self.hand_detection_method == 'yolov8_pose':
+                    self.hand_detection_method = 'fallback'
+                    print("🔄 Switched to fallback hand detection")
+                else:
+                    if self.hands_detector_available:
+                        self.hand_detection_method = 'yolov8_pose'
+                        print("🔄 Switched to YOLOv8 pose hand detection")
+                    else:
+                        print("⚠️ YOLOv8 hand detection not available")
         
         self.stop_camera()
     
@@ -717,7 +870,7 @@ class CameraDetectionSystem:
         return self.detection_data.copy()
 
 def main():
-    print("🤖 AI Camera Detection System - Fixed Version")
+    print("🤖 AI Camera Detection System - YOLOv8 Hand Detection")
     print("=" * 60)
     print(f"🐍 Python version: {sys.version}")
     print("=" * 60)
@@ -734,16 +887,24 @@ def main():
         
         print(f"📱 Working models: {working_models}/3")
         print(f"📱 Phone detector: {detector.model_type.upper()}")
+        print(f"🤲 Hand detector: {detector.hand_detection_method.upper()}")
         print("=" * 60)
         
         if working_models > 0:
+            print("💡 YOLOv8 Installation (if needed):")
+            print("   pip install ultralytics")
+            print("   pip install torch")
+            print("\n🎯 YOLOv8 will detect wrist keypoints as hand positions")
+            print("🔄 Press 'h' during runtime to switch detection methods")
+            print("=" * 60)
             detector.run()
         else:
             print("❌ No detection models available. Cannot proceed.")
             print("\n🔧 Troubleshooting:")
-            print("1. Update MediaPipe: pip install --upgrade mediapipe")
-            print("2. Try Python 3.9-3.11: pyenv install 3.11.0")
-            print("3. Install missing packages: pip install opencv-python torch ultralytics")
+            print("1. Install YOLOv8: pip install ultralytics")
+            print("2. Install PyTorch: pip install torch")
+            print("3. Install OpenCV: pip install opencv-python")
+            print("4. Check camera permissions")
             
     except KeyboardInterrupt:
         print("\n⚠️ Interrupted by user")
