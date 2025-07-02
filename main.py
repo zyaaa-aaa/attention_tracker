@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import pandas as pd
 import json
 import time
 import threading
@@ -7,6 +8,212 @@ from datetime import datetime
 import os
 import sys
 import torch
+from collections import deque
+from statistics import mode, multimode
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import OneHotEncoder
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.metrics import roc_auc_score, classification_report
+
+class AttentionDetectionModel:
+    """Machine Learning Model for Attention Prediction"""
+    
+    def __init__(self, dataset_path="attention_detection_dataset_v1.csv"):
+        self.dataset_path = dataset_path
+        self.model_pipeline = None
+        self.is_trained = False
+        self.feature_columns = []  # Will be set dynamically from dataset
+        self.expected_columns = [
+            'no_of_face', 'face_x', 'face_y', 'face_w', 'face_h', 'face_con',
+            'no_of_hands', 'pose', 'pose_x', 'pose_y', 'phone', 'phone_x', 
+            'phone_y', 'phone_w', 'phone_h', 'phone_con'
+        ]
+        
+    def load_and_train_model(self):
+        """Load dataset and train the attention prediction model"""
+        try:
+            # Load the dataset
+            print("📊 Loading attention detection dataset...")
+            df = pd.read_csv(self.dataset_path)
+            print(f"✅ Dataset loaded: {len(df)} samples")
+            
+            # Display available columns
+            print(f"📋 Available columns: {list(df.columns)}")
+            
+            # Check if 'label' column exists
+            if 'label' not in df.columns:
+                print("❌ Error: 'label' column not found in dataset!")
+                print("🔧 Please ensure your dataset has a 'label' column for the target variable")
+                return False
+            
+            # Automatically detect feature columns (all except 'label')
+            self.feature_columns = [col for col in df.columns if col != 'label']
+            print(f"📊 Using feature columns: {self.feature_columns}")
+            
+            # Check for missing expected columns and warn user
+            missing_columns = [col for col in self.expected_columns if col not in self.feature_columns]
+            if missing_columns:
+                print(f"⚠️ Warning: Some expected columns are missing: {missing_columns}")
+                print("🔧 The model will work with available columns, but performance may be affected")
+            
+            # Separate features and label
+            X = df[self.feature_columns]
+            y = df["label"]
+            
+            print(f"📊 Features shape: {X.shape}")
+            print(f"📊 Target distribution: {y.value_counts().to_dict()}")
+            
+            # Identify categorical and numerical columns automatically
+            categorical_cols = []
+            numerical_cols = []
+            
+            for col in self.feature_columns:
+                if X[col].dtype == 'object' or X[col].dtype.name == 'category':
+                    categorical_cols.append(col)
+                else:
+                    # Check if it looks like a categorical column (few unique values)
+                    unique_values = X[col].nunique()
+                    if unique_values <= 10 and col in ['pose']:  # Known categorical columns
+                        categorical_cols.append(col)
+                    else:
+                        numerical_cols.append(col)
+            
+            print(f"📊 Categorical columns: {categorical_cols}")
+            print(f"📊 Numerical columns: {numerical_cols}")
+            
+            # Create preprocessing pipeline
+            if categorical_cols:
+                # Both categorical and numerical columns
+                preprocessor = ColumnTransformer(
+                    transformers=[
+                        ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols),
+                        ("num", "passthrough", numerical_cols)
+                    ]
+                )
+            else:
+                # Only numerical columns
+                preprocessor = ColumnTransformer(
+                    transformers=[
+                        ("num", "passthrough", numerical_cols)
+                    ]
+                )
+            
+            # Build pipeline with RandomForestClassifier
+            self.model_pipeline = Pipeline(steps=[
+                ("preprocessor", preprocessor),
+                ("classifier", RandomForestClassifier(
+                    n_estimators=100,
+                    random_state=42,
+                    max_depth=10,
+                    min_samples_split=5
+                ))
+            ])
+            
+            # Check if we have enough samples for train/test split
+            if len(df) < 10:
+                print("⚠️ Warning: Very small dataset. Training on all data without test split.")
+                X_train, X_test, y_train, y_test = X, X, y, y
+            else:
+                # Train/test split
+                X_train, X_test, y_train, y_test = train_test_split(
+                    X, y, test_size=0.2, random_state=42, 
+                    stratify=y if len(y.unique()) > 1 else None
+                )
+            
+            # Fit model
+            print("🤖 Training attention prediction model...")
+            self.model_pipeline.fit(X_train, y_train)
+            
+            # Evaluate model
+            try:
+                y_proba = self.model_pipeline.predict_proba(X_test)
+                if y_proba.shape[1] > 1:  # Binary classification
+                    y_proba_pos = y_proba[:, 1]
+                else:
+                    y_proba_pos = y_proba[:, 0]
+                    
+                y_pred = self.model_pipeline.predict(X_test)
+                
+                # Calculate metrics
+                if len(y_test.unique()) > 1:  # Only calculate AUC if we have both classes
+                    roc_auc = roc_auc_score(y_test, y_proba_pos)
+                    print(f"📈 ROC-AUC Score: {roc_auc:.3f}")
+                
+                report = classification_report(y_test, y_pred, output_dict=True)
+                print(f"📈 Accuracy: {report['accuracy']:.3f}")
+                
+                # Print class-specific metrics if available
+                for class_label in report.keys():
+                    if class_label.isdigit() or class_label in ['0', '1']:
+                        class_name = "Attentive" if class_label == '1' else "Not Attentive"
+                        if isinstance(report[class_label], dict):
+                            print(f"📈 {class_name} - Precision: {report[class_label]['precision']:.3f}, "
+                                  f"Recall: {report[class_label]['recall']:.3f}")
+                
+            except Exception as e:
+                print(f"⚠️ Evaluation error (model still trained): {e}")
+            
+            print("✅ Model trained successfully!")
+            self.is_trained = True
+            return True
+            
+        except FileNotFoundError:
+            print(f"❌ Dataset file not found: {self.dataset_path}")
+            print("🔧 Please ensure the dataset file exists in the current directory")
+            print("📋 Expected format: CSV file with 'label' column and feature columns")
+            return False
+        except Exception as e:
+            print(f"❌ Error training model: {e}")
+            import traceback
+            print("🔍 Full error traceback:")
+            traceback.print_exc()
+            return False
+    
+    def predict_attention(self, detection_data):
+        """Predict attention level from detection data"""
+        if not self.is_trained:
+            print("❌ Model not trained yet!")
+            return None, None
+        
+        try:
+            # Convert detection data to DataFrame
+            df = pd.DataFrame([detection_data])
+            
+            # Ensure all feature columns are present with default values
+            for col in self.feature_columns:
+                if col not in df.columns:
+                    # Set default values based on column type
+                    if col == 'pose':
+                        df[col] = 'Forward'
+                    else:
+                        df[col] = 0
+            
+            # Select only the required columns in the correct order
+            df = df[self.feature_columns]
+            
+            print(f"🔍 Prediction input shape: {df.shape}")
+            print(f"🔍 Input columns: {list(df.columns)}")
+            
+            # Predict
+            prediction = self.model_pipeline.predict(df)[0]
+            probability = self.model_pipeline.predict_proba(df)[0]
+            
+            # Handle different probability array shapes
+            if len(probability) > 1:
+                attention_prob = probability[1]  # Probability of being attentive (class 1)
+            else:
+                attention_prob = probability[0] if prediction == 1 else (1 - probability[0])
+            
+            return int(prediction), float(attention_prob)
+            
+        except Exception as e:
+            print(f"❌ Prediction error: {e}")
+            import traceback
+            print("🔍 Prediction error traceback:")
+            traceback.print_exc()
+            return None, None
 
 class CameraDetectionSystem:
     def __init__(self):
@@ -15,6 +222,12 @@ class CameraDetectionSystem:
         self.auto_capture = False
         self.capture_interval = 10  # seconds
         self.capture_counter = 0
+        
+        # Data collection for 10-second prediction
+        self.prediction_mode = False
+        self.data_collection_active = False
+        self.collected_data = deque(maxlen=10)  # Store 10 seconds of data
+        self.collection_start_time = None
         
         # Initialize model_type as fallback first
         self.model_type = 'fallback'
@@ -38,6 +251,9 @@ class CameraDetectionSystem:
             'phone_h': 0,
             'phone_con': 0.0
         }
+        
+        # Initialize ML model
+        self.attention_model = AttentionDetectionModel()
         
         # Initialize detection models
         self.init_detectors()
@@ -132,26 +348,6 @@ class CameraDetectionSystem:
             except Exception as e:
                 print(f"📥 YOLOv8 loading failed: {e}")
             
-            # Try YOLOv5
-            try:
-                import torch
-                self.yolo_model = torch.hub.load('ultralytics/yolov5', 'yolov5s', pretrained=True)
-                self.yolo_model.conf = 0.6
-                self.yolo_model.iou = 0.4
-                self.model_type = 'yolov5'
-                self.phone_detector_available = True
-                print("✅ Phone detector (YOLOv5s) - OK")
-                return
-            except Exception as e:
-                print(f"📥 YOLOv5 loading failed: {e}")
-            
-            # Fallback to OpenCV DNN
-            try:
-                self.load_opencv_dnn()
-                return
-            except Exception as e:
-                print(f"📥 OpenCV DNN loading failed: {e}")
-            
             # Final fallback
             print("📝 Using geometric fallback for phone detection")
             self.model_type = 'fallback'
@@ -161,27 +357,6 @@ class CameraDetectionSystem:
             print(f"❌ Phone detector initialization error: {e}")
             self.model_type = 'fallback'
             self.phone_detector_available = True
-    
-    def load_opencv_dnn(self):
-        """Load OpenCV DNN model"""
-        # Try to download a lightweight ONNX model
-        model_path = "yolov5s.onnx"
-        
-        if not os.path.exists(model_path):
-            print("📥 Downloading YOLOv5 ONNX model...")
-            try:
-                import urllib.request
-                url = "https://github.com/ultralytics/yolov5/releases/download/v7.0/yolov5s.onnx"
-                urllib.request.urlretrieve(url, model_path)
-                print("✅ Model downloaded successfully")
-            except Exception as e:
-                print(f"❌ Download failed: {e}")
-                raise e
-        
-        self.net = cv2.dnn.readNetFromONNX(model_path)
-        self.model_type = 'opencv_onnx'
-        self.phone_detector_available = True
-        print("✅ Phone detector (OpenCV ONNX) - OK")
     
     def start_camera(self):
         """Start camera capture"""
@@ -207,6 +382,7 @@ class CameraDetectionSystem:
         """Stop camera capture"""
         self.is_running = False
         self.auto_capture = False
+        self.data_collection_active = False
         
         if self.cap:
             self.cap.release()
@@ -319,10 +495,6 @@ class CameraDetectionSystem:
                     keypoints = result.keypoints.xy[0]  # Shape: [17, 2] for 17 COCO keypoints
                     confidence = result.keypoints.conf[0] if result.keypoints.conf is not None else None
                     
-                    # COCO pose keypoints indices:
-                    # 9: left_wrist, 10: right_wrist
-                    # 7: left_elbow, 8: right_elbow (for additional validation)
-                    
                     h, w, _ = frame.shape
                     
                     # Check left wrist (index 9)
@@ -381,51 +553,14 @@ class CameraDetectionSystem:
                                 cv2.putText(frame, f'R Hand ({right_wrist_conf:.2f})', 
                                            (x-40, y-30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
                     
-                    # Optional: Draw full pose skeleton for debugging
-                    if len(detected_hands) > 0:
-                        # Draw some pose connections for context
-                        self.draw_pose_connections(frame, keypoints, confidence)
-                    
                     break  # Only process first person
             
             self.detection_data['no_of_hands'] = min(hand_count, 10)  # Reasonable max
-            
-            # Debug output
-            # if hand_count > 0:
-            #     print(f"🤲 YOLOv8 detected {hand_count} hands: {[h['type'] for h in detected_hands]}")
             
         except Exception as e:
             print(f"YOLOv8 hand detection error: {e}")
             # Fallback to alternative method
             self.detect_hands_fallback(frame)
-    
-    def draw_pose_connections(self, frame, keypoints, confidence=None):
-        """Draw basic pose skeleton for context"""
-        try:
-            # Define some basic connections (simplified)
-            connections = [
-                (5, 7),   # left_shoulder to left_elbow
-                (7, 9),   # left_elbow to left_wrist
-                (6, 8),   # right_shoulder to right_elbow
-                (8, 10),  # right_elbow to right_wrist
-                (5, 6),   # shoulder connection
-            ]
-            
-            for start_idx, end_idx in connections:
-                if (len(keypoints) > max(start_idx, end_idx) and
-                    not torch.isnan(keypoints[start_idx]).any() and
-                    not torch.isnan(keypoints[end_idx]).any()):
-                    
-                    start_point = (int(keypoints[start_idx][0]), int(keypoints[start_idx][1]))
-                    end_point = (int(keypoints[end_idx][0]), int(keypoints[end_idx][1]))
-                    
-                    # Only draw if both points are valid
-                    if (start_point[0] > 0 and start_point[1] > 0 and
-                        end_point[0] > 0 and end_point[1] > 0):
-                        cv2.line(frame, start_point, end_point, (0, 255, 255), 2)
-        
-        except Exception as e:
-            pass  # Ignore drawing errors
     
     def detect_hands_fallback(self, frame):
         """Fallback hand detection using skin color and contours"""
@@ -484,9 +619,6 @@ class CameraDetectionSystem:
             
             self.detection_data['no_of_hands'] = min(hand_count, 10)
             
-            if hand_count > 0:
-                print(f"🤲 Fallback detected {hand_count} hands")
-            
         except Exception as e:
             print(f"Fallback hand detection error: {e}")
             self.detection_data['no_of_hands'] = 0
@@ -503,10 +635,6 @@ class CameraDetectionSystem:
         try:
             if self.model_type == 'yolov8':
                 self.detect_phone_yolov8(frame)
-            elif self.model_type == 'yolov5':
-                self.detect_phone_yolov5(frame)
-            elif self.model_type == 'opencv_onnx':
-                self.detect_phone_onnx(frame)
             else:
                 self.detect_phone_fallback(frame)
                 
@@ -556,97 +684,6 @@ class CameraDetectionSystem:
             
         except Exception as e:
             print(f"YOLOv8 error: {e}")
-            self.detect_phone_fallback(frame)
-    
-    def detect_phone_yolov5(self, frame):
-        """Detect phone using YOLOv5"""
-        try:
-            results = self.yolo_model(frame)
-            
-            # Parse results
-            for *box, conf, cls in results.xyxy[0].tolist():
-                class_id = int(cls)
-                confidence = float(conf)
-                
-                if class_id == 67 and confidence > 0.6:  # cell phone
-                    x1, y1, x2, y2 = map(int, box)
-                    x, y = x1, y1
-                    w, h = x2 - x1, y2 - y1
-                    
-                    self.detection_data.update({
-                        'phone': 1,
-                        'phone_x': x + w//2,
-                        'phone_y': y + h//2,
-                        'phone_w': w,
-                        'phone_h': h,
-                        'phone_con': round(confidence, 2)
-                    })
-                    
-                    cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
-                    cv2.putText(frame, f'Phone ({confidence:.2f})', (x, y-10), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-                    return
-            
-            # No phone detected
-            self.detection_data.update({
-                'phone': 0, 'phone_x': 0, 'phone_y': 0,
-                'phone_w': 0, 'phone_h': 0, 'phone_con': 0.0
-            })
-            
-        except Exception as e:
-            print(f"YOLOv5 error: {e}")
-            self.detect_phone_fallback(frame)
-    
-    def detect_phone_onnx(self, frame):
-        """Detect phone using ONNX model"""
-        try:
-            height, width = frame.shape[:2]
-            
-            # Prepare input
-            blob = cv2.dnn.blobFromImage(frame, 1/255.0, (640, 640), swapRB=True, crop=False)
-            self.net.setInput(blob)
-            outputs = self.net.forward()
-            
-            # Process YOLOv5 outputs
-            for detection in outputs[0][0]:
-                confidence = detection[4]
-                if confidence > 0.5:
-                    scores = detection[5:]
-                    class_id = np.argmax(scores)
-                    
-                    if class_id == 67 and scores[class_id] > 0.6:  # cell phone
-                        center_x = int(detection[0] * width)
-                        center_y = int(detection[1] * height)
-                        w = int(detection[2] * width)
-                        h = int(detection[3] * height)
-                        
-                        x = int(center_x - w / 2)
-                        y = int(center_y - h / 2)
-                        
-                        final_conf = confidence * scores[class_id]
-                        
-                        self.detection_data.update({
-                            'phone': 1,
-                            'phone_x': center_x,
-                            'phone_y': center_y,
-                            'phone_w': w,
-                            'phone_h': h,
-                            'phone_con': round(final_conf, 2)
-                        })
-                        
-                        cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
-                        cv2.putText(frame, f'Phone ({final_conf:.2f})', (x, y-10), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
-                        return
-            
-            # No phone detected
-            self.detection_data.update({
-                'phone': 0, 'phone_x': 0, 'phone_y': 0,
-                'phone_w': 0, 'phone_h': 0, 'phone_con': 0.0
-            })
-            
-        except Exception as e:
-            print(f"ONNX detection error: {e}")
             self.detect_phone_fallback(frame)
     
     def detect_phone_fallback(self, frame):
@@ -713,6 +750,143 @@ class CameraDetectionSystem:
                 'phone_w': 0, 'phone_h': 0, 'phone_con': 0.0
             })
     
+    def start_prediction_mode(self):
+        """Start 10-second data collection for attention prediction"""
+        if self.data_collection_active:
+            print("⚠️ Data collection already in progress!")
+            return
+        
+        print("🎯 Starting 10-second attention prediction...")
+        print("📊 Collecting data every second...")
+        
+        self.data_collection_active = True
+        self.collected_data.clear()
+        self.collection_start_time = time.time()
+        
+        # Start collection thread
+        collection_thread = threading.Thread(target=self.data_collection_worker)
+        collection_thread.daemon = True
+        collection_thread.start()
+    
+    def data_collection_worker(self):
+        """Worker thread for collecting data every second for 10 seconds"""
+        start_time = time.time()
+        
+        for second in range(10):
+            if not self.data_collection_active:
+                break
+            
+            # Wait for next second
+            target_time = start_time + (second + 1)
+            current_time = time.time()
+            
+            if current_time < target_time:
+                time.sleep(target_time - current_time)
+            
+            # Collect current detection data
+            data_snapshot = self.detection_data.copy()
+            data_snapshot['timestamp'] = time.time()
+            self.collected_data.append(data_snapshot)
+            
+            print(f"📊 Collected data point {second + 1}/10")
+        
+        # After 10 seconds, process and predict
+        if self.data_collection_active:
+            self.process_collected_data()
+        
+        self.data_collection_active = False
+    
+    def process_collected_data(self):
+        """Process collected data and make attention prediction"""
+        if len(self.collected_data) == 0:
+            print("❌ No data collected!")
+            return
+        
+        print(f"\n📊 Processing {len(self.collected_data)} data points...")
+        
+        # Convert to DataFrame for easier processing
+        df = pd.DataFrame(list(self.collected_data))
+        
+        # Calculate averages for numerical features
+        numerical_features = [
+            'no_of_face', 'face_x', 'face_y', 'face_w', 'face_h', 'face_con',
+            'no_of_hands', 'pose_x', 'pose_y', 'phone', 'phone_x', 
+            'phone_y', 'phone_w', 'phone_h', 'phone_con'
+        ]
+        
+        averaged_data = {}
+        
+        for feature in numerical_features:
+            if feature in df.columns:
+                averaged_data[feature] = df[feature].mean()
+            else:
+                averaged_data[feature] = 0
+        
+        # For categorical features like 'pose', use mode (most frequent)
+        pose_values = df['pose'].tolist()
+        if pose_values:
+            try:
+                # Get the most frequent pose
+                pose_modes = multimode(pose_values)
+                averaged_data['pose'] = pose_modes[0]  # Take first mode if multiple
+            except:
+                averaged_data['pose'] = 'Forward'  # Default
+        else:
+            averaged_data['pose'] = 'Forward'
+        
+        print("📈 Averaged detection data:")
+        for key, value in averaged_data.items():
+            if isinstance(value, float):
+                print(f"  {key}: {value:.2f}")
+            else:
+                print(f"  {key}: {value}")
+        
+        # Make prediction using ML model
+        if self.attention_model.is_trained:
+            prediction, probability = self.attention_model.predict_attention(averaged_data)
+            
+            if prediction is not None:
+                attention_status = "ATTENTIVE" if prediction == 1 else "NOT ATTENTIVE"
+                confidence = probability if prediction == 1 else (1 - probability)
+                
+                print(f"\n🎯 ATTENTION PREDICTION:")
+                print(f"📊 Status: {attention_status}")
+                print(f"📊 Confidence: {confidence:.1%}")
+                print(f"📊 Raw Prediction: {prediction}")
+                print(f"📊 Probability (Attentive): {probability:.3f}")
+                
+                # Save prediction result
+                self.save_prediction_result(averaged_data, prediction, probability)
+                
+            else:
+                print("❌ Failed to make prediction!")
+        else:
+            print("❌ ML model not trained!")
+    
+    def save_prediction_result(self, averaged_data, prediction, probability):
+        """Save prediction result to file"""
+        timestamp = datetime.now().isoformat()
+        
+        result_data = {
+            'timestamp': timestamp,
+            'averaged_features': averaged_data,
+            'prediction': int(prediction),
+            'probability_attentive': float(probability),
+            'attention_status': "ATTENTIVE" if prediction == 1 else "NOT ATTENTIVE",
+            'data_points_collected': len(self.collected_data)
+        }
+        
+        filename = f"detection_output/attention_prediction_{timestamp.replace(':', '-').replace('.', '_')}.json"
+        
+        try:
+            with open(filename, 'w') as f:
+                json.dump(result_data, f, indent=2)
+            
+            print(f"💾 Prediction saved: {filename}")
+            
+        except Exception as e:
+            print(f"❌ Error saving prediction: {e}")
+    
     def save_detection_data(self):
         """Save current detection data to JSON file"""
         timestamp = datetime.now().isoformat()
@@ -733,29 +907,6 @@ class CameraDetectionSystem:
             
         except Exception as e:
             print(f"❌ Error saving data: {e}")
-    
-    def auto_capture_worker(self):
-        """Worker thread for auto capture"""
-        while self.auto_capture:
-            time.sleep(self.capture_interval)
-            if self.auto_capture:
-                self.save_detection_data()
-    
-    def start_auto_capture(self):
-        """Start automatic data capture"""
-        if not self.auto_capture:
-            self.auto_capture = True
-            capture_thread = threading.Thread(target=self.auto_capture_worker)
-            capture_thread.daemon = True
-            capture_thread.start()
-            print(f"⏰ Auto capture started! (every {self.capture_interval}s)")
-        else:
-            print("⚠️ Auto capture already running!")
-    
-    def stop_auto_capture(self):
-        """Stop automatic data capture"""
-        self.auto_capture = False
-        print("⏸️ Auto capture stopped")
     
     def print_detection_summary(self):
         """Print current detection data in the required format"""
@@ -785,8 +936,9 @@ class CameraDetectionSystem:
         
         print("\n🎮 CONTROLS:")
         print("  SPACE - Save current data")
-        print("  'a' - Toggle auto capture")
         print("  'p' - Print detection data")
+        print("  'r' - Start 10-second attention prediction")
+        print("  's' - Stop data collection")
         print("  'h' - Toggle hand detection method")
         print("  'q' - Quit")
         print("\n▶️ Detection started...")
@@ -825,17 +977,42 @@ class CameraDetectionSystem:
                 f"Hands: {'✅' if self.hands_detector_available else '❌'} ({self.detection_data['no_of_hands']}) [{self.hand_detection_method}]",
                 f"Phone: {'✅' if self.phone_detector_available else '❌'} ({'Yes' if self.detection_data['phone'] else 'No'})",
                 f"Pose: {self.detection_data['pose']}",
-                f"Auto: {'ON' if self.auto_capture else 'OFF'}",
+                f"ML Model: {'✅' if self.attention_model.is_trained else '❌'}",
+                f"Collecting: {'YES' if self.data_collection_active else 'NO'}",
                 f"Saves: {self.capture_counter}",
                 f"Model: {self.model_type.upper()}"
             ]
+            
+            # Show collection progress if active
+            if self.data_collection_active:
+                elapsed = time.time() - self.collection_start_time
+                remaining = max(0, 10 - elapsed)
+                progress = f"Collection: {len(self.collected_data)}/10 ({remaining:.1f}s left)"
+                status_info.append(progress)
+                
+                # Draw progress bar
+                bar_width = 300
+                bar_height = 20
+                bar_x = 10
+                bar_y = frame.shape[0] - 40
+                
+                # Background
+                cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (0, 0, 0), -1)
+                
+                # Progress
+                progress_width = int((len(self.collected_data) / 10) * bar_width)
+                cv2.rectangle(frame, (bar_x, bar_y), (bar_x + progress_width, bar_y + bar_height), (0, 255, 0), -1)
+                
+                # Text
+                cv2.putText(frame, f"Collecting: {len(self.collected_data)}/10", 
+                           (bar_x + 5, bar_y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
             for i, text in enumerate(status_info):
                 cv2.putText(frame, text, (10, 30 + i*25), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
             # Show frame
-            cv2.imshow('AI Detection System - YOLOv8 Hand Detection', frame)
+            cv2.imshow('AI Attention Detection System', frame)
             
             # Handle keyboard input
             key = cv2.waitKey(1) & 0xFF
@@ -844,13 +1021,19 @@ class CameraDetectionSystem:
             elif key == ord(' '):
                 self.save_detection_data()
                 self.print_detection_summary()
-            elif key == ord('a'):
-                if self.auto_capture:
-                    self.stop_auto_capture()
-                else:
-                    self.start_auto_capture()
             elif key == ord('p'):
                 self.print_detection_summary()
+            elif key == ord('r'):
+                if not self.data_collection_active:
+                    self.start_prediction_mode()
+                else:
+                    print("⚠️ Data collection already in progress!")
+            elif key == ord('s'):
+                if self.data_collection_active:
+                    self.data_collection_active = False
+                    print("⏹️ Data collection stopped")
+                else:
+                    print("⚠️ No data collection in progress")
             elif key == ord('h'):
                 # Toggle hand detection method
                 if self.hand_detection_method == 'yolov8_pose':
@@ -869,14 +1052,60 @@ class CameraDetectionSystem:
         """Get current detection data"""
         return self.detection_data.copy()
 
+def check_dataset_structure(dataset_path="attention_detection_dataset_v1.csv"):
+    """Helper function to check dataset structure"""
+    try:
+        print("🔍 Checking dataset structure...")
+        df = pd.read_csv(dataset_path)
+        
+        print(f"📊 Dataset shape: {df.shape}")
+        print(f"📋 Columns: {list(df.columns)}")
+        print(f"📋 Data types:")
+        for col in df.columns:
+            print(f"  {col}: {df[col].dtype} (unique values: {df[col].nunique()})")
+        
+        print(f"\n📋 First 3 rows:")
+        print(df.head(3).to_string())
+        
+        if 'label' in df.columns:
+            print(f"\n📊 Label distribution:")
+            print(df['label'].value_counts())
+        else:
+            print("❌ No 'label' column found!")
+            
+        return True
+        
+    except FileNotFoundError:
+        print(f"❌ Dataset file not found: {dataset_path}")
+        return False
+    except Exception as e:
+        print(f"❌ Error reading dataset: {e}")
+        return False
+
 def main():
-    print("🤖 AI Camera Detection System - YOLOv8 Hand Detection")
+    print("🤖 AI Attention Detection System")
     print("=" * 60)
     print(f"🐍 Python version: {sys.version}")
     print("=" * 60)
     
+    # First, check dataset structure
+    print("\n🔍 Dataset Structure Check:")
+    check_dataset_structure()
+    print("=" * 60)
+    
     try:
         detector = CameraDetectionSystem()
+        
+        # Load and train the ML model
+        print("\n🧠 Loading Machine Learning Model...")
+        if detector.attention_model.load_and_train_model():
+            print("✅ ML model ready for predictions!")
+        else:
+            print("❌ ML model failed to load. Predictions will not be available.")
+            print("🔧 Please check the dataset structure above and ensure:")
+            print("   1. File 'attention_detection_dataset_v1.csv' exists")
+            print("   2. File has a 'label' column")
+            print("   3. File has feature columns (numeric data)")
         
         # Show initialization results
         working_models = sum([
@@ -885,17 +1114,24 @@ def main():
             detector.phone_detector_available
         ])
         
+        print(f"\n📱 Detection Summary:")
         print(f"📱 Working models: {working_models}/3")
         print(f"📱 Phone detector: {detector.model_type.upper()}")
         print(f"🤲 Hand detector: {detector.hand_detection_method.upper()}")
+        print(f"🧠 ML model: {'READY' if detector.attention_model.is_trained else 'NOT AVAILABLE'}")
         print("=" * 60)
         
         if working_models > 0:
-            print("💡 YOLOv8 Installation (if needed):")
-            print("   pip install ultralytics")
-            print("   pip install torch")
-            print("\n🎯 YOLOv8 will detect wrist keypoints as hand positions")
-            print("🔄 Press 'h' during runtime to switch detection methods")
+            print("💡 Key Features:")
+            print("   📊 Real-time face, hand, and phone detection")
+            print("   🎯 10-second attention prediction with ML")
+            print("   📈 Automatic feature averaging and mode calculation")
+            print("   💾 JSON data export for analysis")
+            print("\n🎮 Instructions:")
+            print("   1. Press 'r' to start 10-second attention prediction")
+            print("   2. System will collect data every second for 10 seconds")
+            print("   3. After collection, ML model predicts attention level")
+            print("   4. Results are saved automatically to JSON files")
             print("=" * 60)
             detector.run()
         else:
@@ -904,7 +1140,9 @@ def main():
             print("1. Install YOLOv8: pip install ultralytics")
             print("2. Install PyTorch: pip install torch")
             print("3. Install OpenCV: pip install opencv-python")
-            print("4. Check camera permissions")
+            print("4. Install scikit-learn: pip install scikit-learn")
+            print("5. Check camera permissions")
+            print("6. Ensure dataset file exists: attention_detection_dataset_v1.csv")
             
     except KeyboardInterrupt:
         print("\n⚠️ Interrupted by user")
@@ -913,7 +1151,7 @@ def main():
         import traceback
         traceback.print_exc()
     finally:
-        print("👋 Detection system stopped")
+        print("👋 Attention detection system stopped")
 
 if __name__ == "__main__":
     main()
