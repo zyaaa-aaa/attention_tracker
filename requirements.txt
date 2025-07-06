@@ -1,0 +1,17 @@
+# Core Computer Vision and Image Processing
+opencv-python==4.8.1.78
+numpy==1.26.1
+
+# Machine Learning and Data Processing
+pandas==2.2.1
+scikit-learn==1.4.2
+
+# Deep Learning - PyTorch
+torch==2.6.0
+torchvision==0.21.0
+
+# YOLO Object Detection
+ultralytics==8.3.161
+
+# Standard Python Libraries
+# json, time, threading, datetime, os, sys, collections, statistics are built-in
