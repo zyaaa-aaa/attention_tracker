@@ -1,0 +1,28 @@
+{
+  "timestamp": "2025-07-06T18:17:28.682197",
+  "averaged_features": {
+    "no_of_face": 1.0,
+    "face_x": 102.0,
+    "face_y": 207.7,
+    "face_w": 202.2,
+    "face_h": 202.2,
+    "face_con": 0.85,
+    "no_of_hand": 0.1,
+    "pose_x": -16.1,
+    "pose_y": 8.2,
+    "phone": 0.5,
+    "phone_x": 179.4,
+    "phone_y": 52.2,
+    "phone_w": 62.4,
+    "phone_h": 90.3,
+    "phone_con": 0.332,
+    "pose": "Forward"
+  },
+  "prediction": 1,
+  "prediction_meaning": "1=Inattentive, 0=Attentive",
+  "probability_inattentive": 0.9,
+  "probability_attentive": 0.09999999999999998,
+  "attention_status": "INATTENTIVE",
+  "confidence_percentage": "90.0%",
+  "data_points_collected": 10
+}
