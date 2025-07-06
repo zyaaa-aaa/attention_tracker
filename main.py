@@ -24,48 +24,41 @@ class AttentionDetectionModel:
         self.dataset_path = dataset_path
         self.model_pipeline = None
         self.is_trained = False
-        self.feature_columns = []  # Will be set dynamically from dataset
+        self.feature_columns = []  
         self.expected_columns = [
             'no_of_face', 'face_x', 'face_y', 'face_w', 'face_h', 'face_con',
-            'no_of_hands', 'pose', 'pose_x', 'pose_y', 'phone', 'phone_x', 
+            'no_of_hand', 'pose', 'pose_x', 'pose_y', 'phone', 'phone_x', 
             'phone_y', 'phone_w', 'phone_h', 'phone_con'
         ]
         
     def load_and_train_model(self):
         """Load dataset and train the attention prediction model"""
         try:
-            # Load the dataset
             print("📊 Loading attention detection dataset...")
             df = pd.read_csv(self.dataset_path)
             print(f"✅ Dataset loaded: {len(df)} samples")
             
-            # Display available columns
             print(f"📋 Available columns: {list(df.columns)}")
             
-            # Check if 'label' column exists
             if 'label' not in df.columns:
                 print("❌ Error: 'label' column not found in dataset!")
                 print("🔧 Please ensure your dataset has a 'label' column for the target variable")
                 return False
             
-            # Automatically detect feature columns (all except 'label')
             self.feature_columns = [col for col in df.columns if col != 'label']
             print(f"📊 Using feature columns: {self.feature_columns}")
             
-            # Check for missing expected columns and warn user
             missing_columns = [col for col in self.expected_columns if col not in self.feature_columns]
             if missing_columns:
                 print(f"⚠️ Warning: Some expected columns are missing: {missing_columns}")
                 print("🔧 The model will work with available columns, but performance may be affected")
             
-            # Separate features and label
             X = df[self.feature_columns]
             y = df["label"]
             
             print(f"📊 Features shape: {X.shape}")
             print(f"📊 Target distribution: {y.value_counts().to_dict()}")
             
-            # Identify categorical and numerical columns automatically
             categorical_cols = []
             numerical_cols = []
             
@@ -73,9 +66,8 @@ class AttentionDetectionModel:
                 if X[col].dtype == 'object' or X[col].dtype.name == 'category':
                     categorical_cols.append(col)
                 else:
-                    # Check if it looks like a categorical column (few unique values)
                     unique_values = X[col].nunique()
-                    if unique_values <= 10 and col in ['pose']:  # Known categorical columns
+                    if unique_values <= 10 and col in ['pose']:
                         categorical_cols.append(col)
                     else:
                         numerical_cols.append(col)
@@ -83,9 +75,7 @@ class AttentionDetectionModel:
             print(f"📊 Categorical columns: {categorical_cols}")
             print(f"📊 Numerical columns: {numerical_cols}")
             
-            # Create preprocessing pipeline
             if categorical_cols:
-                # Both categorical and numerical columns
                 preprocessor = ColumnTransformer(
                     transformers=[
                         ("cat", OneHotEncoder(handle_unknown="ignore"), categorical_cols),
@@ -93,14 +83,12 @@ class AttentionDetectionModel:
                     ]
                 )
             else:
-                # Only numerical columns
                 preprocessor = ColumnTransformer(
                     transformers=[
                         ("num", "passthrough", numerical_cols)
                     ]
                 )
             
-            # Build pipeline with RandomForestClassifier
             self.model_pipeline = Pipeline(steps=[
                 ("preprocessor", preprocessor),
                 ("classifier", RandomForestClassifier(
@@ -111,40 +99,34 @@ class AttentionDetectionModel:
                 ))
             ])
             
-            # Check if we have enough samples for train/test split
-            if len(df) < 10:
-                print("⚠️ Warning: Very small dataset. Training on all data without test split.")
-                X_train, X_test, y_train, y_test = X, X, y, y
-            else:
-                # Train/test split
-                X_train, X_test, y_train, y_test = train_test_split(
-                    X, y, test_size=0.2, random_state=42, 
-                    stratify=y if len(y.unique()) > 1 else None
-                )
+            # if len(df) < 10:
+            #     print("⚠️ Warning: Very small dataset. Training on all data without test split.")
+            #     X_train, X_test, y_train, y_test = X, X, y, y
+            # else:
+            X_train, X_test, y_train, y_test = train_test_split(
+                X, y, test_size=0.2, random_state=42, 
+                stratify=y if len(y.unique()) > 1 else None
+            )
             
-            # Fit model
             print("🤖 Training attention prediction model...")
             self.model_pipeline.fit(X_train, y_train)
             
-            # Evaluate model
             try:
                 y_proba = self.model_pipeline.predict_proba(X_test)
-                if y_proba.shape[1] > 1:  # Binary classification
+                if y_proba.shape[1] > 1:  
                     y_proba_pos = y_proba[:, 1]
                 else:
                     y_proba_pos = y_proba[:, 0]
                     
                 y_pred = self.model_pipeline.predict(X_test)
                 
-                # Calculate metrics
-                if len(y_test.unique()) > 1:  # Only calculate AUC if we have both classes
+                if len(y_test.unique()) > 1: 
                     roc_auc = roc_auc_score(y_test, y_proba_pos)
                     print(f"📈 ROC-AUC Score: {roc_auc:.3f}")
                 
                 report = classification_report(y_test, y_pred, output_dict=True)
                 print(f"📈 Accuracy: {report['accuracy']:.3f}")
                 
-                # Print class-specific metrics if available
                 for class_label in report.keys():
                     if class_label.isdigit() or class_label in ['0', '1']:
                         class_name = "Attentive" if class_label == '1' else "Not Attentive"
@@ -178,31 +160,25 @@ class AttentionDetectionModel:
             return None, None
         
         try:
-            # Convert detection data to DataFrame
             df = pd.DataFrame([detection_data])
             
-            # Ensure all feature columns are present with default values
             for col in self.feature_columns:
                 if col not in df.columns:
-                    # Set default values based on column type
                     if col == 'pose':
                         df[col] = 'Forward'
                     else:
                         df[col] = 0
             
-            # Select only the required columns in the correct order
             df = df[self.feature_columns]
             
             print(f"🔍 Prediction input shape: {df.shape}")
             print(f"🔍 Input columns: {list(df.columns)}")
             
-            # Predict
             prediction = self.model_pipeline.predict(df)[0]
             probability = self.model_pipeline.predict_proba(df)[0]
             
-            # Handle different probability array shapes
             if len(probability) > 1:
-                attention_prob = probability[1]  # Probability of being attentive (class 1)
+                attention_prob = probability[1]
             else:
                 attention_prob = probability[0] if prediction == 1 else (1 - probability[0])
             
@@ -223,13 +199,11 @@ class CameraDetectionSystem:
         self.capture_interval = 10  # seconds
         self.capture_counter = 0
         
-        # Data collection for 10-second prediction
         self.prediction_mode = False
         self.data_collection_active = False
-        self.collected_data = deque(maxlen=10)  # Store 10 seconds of data
+        self.collected_data = deque(maxlen=10) 
         self.collection_start_time = None
         
-        # Initialize model_type as fallback first
         self.model_type = 'fallback'
         
         # Detection data structure
@@ -240,7 +214,7 @@ class CameraDetectionSystem:
             'face_w': 0,
             'face_h': 0,
             'face_con': 0.0,
-            'no_of_hands': 0,
+            'no_of_hand': 0,
             'pose': 'Forward',
             'pose_x': 0,
             'pose_y': 0,
@@ -252,13 +226,10 @@ class CameraDetectionSystem:
             'phone_con': 0.0
         }
         
-        # Initialize ML model
         self.attention_model = AttentionDetectionModel()
         
-        # Initialize detection models
         self.init_detectors()
         
-        # Create output directory
         if not os.path.exists('detection_output'):
             os.makedirs('detection_output')
     
@@ -266,13 +237,11 @@ class CameraDetectionSystem:
         """Initialize pre-trained detection models with error handling"""
         print("🔧 Initializing detection models...")
         
-        # Initialize flags
         self.face_detector_available = False
         self.hands_detector_available = False
         self.phone_detector_available = False
         
         try:
-            # Face detection using Haar Cascade (most reliable)
             cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
             if os.path.exists(cascade_path):
                 self.face_cascade = cv2.CascadeClassifier(cascade_path)
@@ -287,12 +256,10 @@ class CameraDetectionSystem:
         except Exception as e:
             print(f"❌ Face detector error: {e}")
         
-        # Try YOLOv8 Pose for hand detection
         try:
             from ultralytics import YOLO
             
-            # Load YOLOv8 pose model for hand/keypoint detection
-            self.yolo_pose = YOLO('yolov8n-pose.pt')  # Nano pose model
+            self.yolo_pose = YOLO('yolov8n-pose.pt')
             self.hands_detector_available = True
             self.hand_detection_method = 'yolov8_pose'
             print("✅ Hand detector (YOLOv8 Pose) - OK")
@@ -307,10 +274,8 @@ class CameraDetectionSystem:
             self.hands_detector_available = False
             self.hand_detection_method = 'fallback'
             
-        # Load phone detection model
         self.load_phone_detector()
         
-        # Summary
         working_models = sum([
             self.face_detector_available,
             self.hands_detector_available, 
@@ -329,15 +294,12 @@ class CameraDetectionSystem:
     def load_phone_detector(self):
         """Load phone detection model with fallbacks"""
         try:
-            # Try YOLOv8 first (best performance)
             try:
                 from ultralytics import YOLO
-                # Use the same YOLO model for both hands and phones if possible
                 if hasattr(self, 'yolo_pose'):
-                    # Try to use a general YOLOv8 model for phone detection
-                    self.yolo_model = YOLO('yolov8n.pt')  # General object detection model
+                    self.yolo_model = YOLO('yolov8n.pt')
                 else:
-                    self.yolo_model = YOLO('yolov8n.pt')  # Nano version for speed
+                    self.yolo_model = YOLO('yolov8n.pt')
                     
                 self.model_type = 'yolov8'
                 self.phone_detector_available = True
@@ -351,7 +313,7 @@ class CameraDetectionSystem:
             # Final fallback
             print("📝 Using geometric fallback for phone detection")
             self.model_type = 'fallback'
-            self.phone_detector_available = True  # Fallback is always available
+            self.phone_detector_available = True
             
         except Exception as e:
             print(f"❌ Phone detector initialization error: {e}")
@@ -366,7 +328,6 @@ class CameraDetectionSystem:
                 print("❌ Error: Could not open camera")
                 return False
             
-            # Set camera resolution
             self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
             self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
             
@@ -393,7 +354,6 @@ class CameraDetectionSystem:
     def detect_faces(self, frame, gray):
         """Detect faces using Haar Cascade"""
         if not self.face_detector_available:
-            # Reset face data
             self.detection_data.update({
                 'no_of_face': 0, 'face_x': 0, 'face_y': 0, 
                 'face_w': 0, 'face_h': 0, 'face_con': 0.0,
@@ -412,26 +372,24 @@ class CameraDetectionSystem:
             self.detection_data['no_of_face'] = len(faces)
             
             if len(faces) > 0:
-                # Use the largest face
                 largest_face = max(faces, key=lambda face: face[2] * face[3])
                 x, y, w, h = largest_face
                 
-                self.detection_data['face_x'] = int(x + w//2)  # Center X
-                self.detection_data['face_y'] = int(y + h//2)  # Center Y
+                self.detection_data['face_x'] = int(x)  # Upper-left x
+                self.detection_data['face_y'] = int(y)  # Upper-left y
                 self.detection_data['face_w'] = int(w)
                 self.detection_data['face_h'] = int(h)
-                self.detection_data['face_con'] = 0.85  # Haar cascade doesn't provide confidence
+                self.detection_data['face_con'] = 0.85
                 
-                # Draw rectangle around face
                 cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
                 cv2.putText(frame, f'Face (0.85)', (x, y-10), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                 
-                # Estimate pose based on face position
-                self.estimate_pose(x, y, w, h, frame.shape)
+                center_x = x + w // 2
+                center_y = y + h // 2
+                self.estimate_pose(center_x, center_y, w, h, frame.shape)
                 
             else:
-                # No face detected
                 self.detection_data.update({
                     'face_x': 0, 'face_y': 0, 'face_w': 0, 'face_h': 0, 'face_con': 0.0,
                     'pose': 'Forward', 'pose_x': 0, 'pose_y': 0
@@ -440,23 +398,18 @@ class CameraDetectionSystem:
         except Exception as e:
             print(f"Face detection error: {e}")
             self.detection_data['no_of_face'] = 0
-    
-    def estimate_pose(self, face_x, face_y, face_w, face_h, frame_shape):
-        """Estimate face pose based on position"""
-        center_x = face_x + face_w // 2
-        center_y = face_y + face_h // 2
-        
+
+    def estimate_pose(self, center_x, center_y, face_w, face_h, frame_shape):
+        """Estimate face pose based on center position"""
         frame_center_x = frame_shape[1] // 2
         frame_center_y = frame_shape[0] // 2
         
-        # Calculate pose angles (simplified)
         pose_x = int(((center_x - frame_center_x) / frame_center_x) * 45)
         pose_y = int(((center_y - frame_center_y) / frame_center_y) * 30)
         
         self.detection_data['pose_x'] = pose_x
         self.detection_data['pose_y'] = pose_y
         
-        # Determine pose direction
         if abs(pose_x) < 15 and abs(pose_y) < 10:
             self.detection_data['pose'] = 'Forward'
         elif pose_x > 20:
@@ -482,34 +435,28 @@ class CameraDetectionSystem:
     def detect_hands_yolov8_pose(self, frame):
         """Detect hands using YOLOv8 pose estimation"""
         try:
-            # Run YOLOv8 pose detection
             results = self.yolo_pose(frame, verbose=False)
             
             hand_count = 0
             detected_hands = []
             
             for result in results:
-                # Get pose keypoints
                 if result.keypoints is not None and len(result.keypoints.xy) > 0:
-                    # Get keypoints for the first person (most confident)
-                    keypoints = result.keypoints.xy[0]  # Shape: [17, 2] for 17 COCO keypoints
+                    keypoints = result.keypoints.xy[0]
                     confidence = result.keypoints.conf[0] if result.keypoints.conf is not None else None
                     
                     h, w, _ = frame.shape
                     
-                    # Check left wrist (index 9)
                     if len(keypoints) > 9:
                         left_wrist = keypoints[9]
                         left_wrist_conf = confidence[9] if confidence is not None else 0.5
                         
-                        # Check if wrist is detected with good confidence
                         if (not torch.isnan(left_wrist).any() and 
                             left_wrist[0] > 0 and left_wrist[1] > 0 and
-                            left_wrist_conf > 0.3):  # Lower threshold for wrist detection
+                            left_wrist_conf > 0.3):
                             
                             x, y = int(left_wrist[0]), int(left_wrist[1])
                             
-                            # Validate wrist is within frame
                             if 0 < x < w and 0 < y < h:
                                 hand_count += 1
                                 detected_hands.append({
@@ -519,25 +466,21 @@ class CameraDetectionSystem:
                                     'confidence': float(left_wrist_conf)
                                 })
                                 
-                                # Draw left wrist/hand detection
                                 cv2.circle(frame, (x, y), 12, (255, 0, 0), 3)
                                 cv2.circle(frame, (x, y), 25, (255, 0, 0), 2)
                                 cv2.putText(frame, f'L Hand ({left_wrist_conf:.2f})', 
                                            (x-40, y-30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
                     
-                    # Check right wrist (index 10)
                     if len(keypoints) > 10:
                         right_wrist = keypoints[10]
                         right_wrist_conf = confidence[10] if confidence is not None else 0.5
                         
-                        # Check if wrist is detected with good confidence
                         if (not torch.isnan(right_wrist).any() and 
                             right_wrist[0] > 0 and right_wrist[1] > 0 and
-                            right_wrist_conf > 0.3):  # Lower threshold for wrist detection
+                            right_wrist_conf > 0.3):
                             
                             x, y = int(right_wrist[0]), int(right_wrist[1])
                             
-                            # Validate wrist is within frame
                             if 0 < x < w and 0 < y < h:
                                 hand_count += 1
                                 detected_hands.append({
@@ -547,46 +490,38 @@ class CameraDetectionSystem:
                                     'confidence': float(right_wrist_conf)
                                 })
                                 
-                                # Draw right wrist/hand detection
                                 cv2.circle(frame, (x, y), 12, (0, 0, 255), 3)
                                 cv2.circle(frame, (x, y), 25, (0, 0, 255), 2)
                                 cv2.putText(frame, f'R Hand ({right_wrist_conf:.2f})', 
                                            (x-40, y-30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
                     
-                    break  # Only process first person
+                    break
             
-            self.detection_data['no_of_hands'] = min(hand_count, 10)  # Reasonable max
+            self.detection_data['no_of_hand'] = min(hand_count, 10)
             
         except Exception as e:
             print(f"YOLOv8 hand detection error: {e}")
-            # Fallback to alternative method
             self.detect_hands_fallback(frame)
     
     def detect_hands_fallback(self, frame):
         """Fallback hand detection using skin color and contours"""
         try:
-            # Convert to HSV for skin detection
             hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
             
-            # Define skin color range in HSV
             lower_skin = np.array([0, 20, 70], dtype=np.uint8)
             upper_skin = np.array([20, 255, 255], dtype=np.uint8)
             mask1 = cv2.inRange(hsv, lower_skin, upper_skin)
             
-            # Additional skin range
             lower_skin2 = np.array([160, 20, 70], dtype=np.uint8)
             upper_skin2 = np.array([180, 255, 255], dtype=np.uint8)
             mask2 = cv2.inRange(hsv, lower_skin2, upper_skin2)
             
-            # Combine masks
             skin_mask = cv2.bitwise_or(mask1, mask2)
             
-            # Morphological operations
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
             skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_OPEN, kernel)
             skin_mask = cv2.morphologyEx(skin_mask, cv2.MORPH_CLOSE, kernel)
             
-            # Find contours
             contours, _ = cv2.findContours(skin_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             hand_count = 0
@@ -594,14 +529,11 @@ class CameraDetectionSystem:
             for contour in contours:
                 area = cv2.contourArea(contour)
                 
-                # Filter by area (hand-like size)
                 if 1500 < area < 25000:
                     x, y, w, h = cv2.boundingRect(contour)
                     aspect_ratio = h / w if w > 0 else 0
                     
-                    # Hand-like criteria
                     if 0.7 < aspect_ratio < 2.5:
-                        # Additional validation using convex hull
                         hull = cv2.convexHull(contour, returnPoints=False)
                         if len(hull) > 3:
                             defects = cv2.convexityDefects(contour, hull)
@@ -609,19 +541,17 @@ class CameraDetectionSystem:
                             if defects is not None and len(defects) > 1:
                                 hand_count += 1
                                 
-                                # Draw hand detection
                                 cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 255), 2)
                                 cv2.putText(frame, f'Hand {hand_count} (Fallback)', 
                                            (x, y-10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 2)
                                 
-                                # Draw contour
                                 cv2.drawContours(frame, [contour], -1, (255, 255, 0), 2)
             
-            self.detection_data['no_of_hands'] = min(hand_count, 10)
+            self.detection_data['no_of_hand'] = min(hand_count, 10)
             
         except Exception as e:
             print(f"Fallback hand detection error: {e}")
-            self.detection_data['no_of_hands'] = 0
+            self.detection_data['no_of_hand'] = 0
     
     def detect_phone(self, frame):
         """Detect phone using available method"""
@@ -654,29 +584,25 @@ class CameraDetectionSystem:
                         class_id = int(box.cls[0])
                         confidence = float(box.conf[0])
                         
-                        # Check if it's a cell phone (class 67 in COCO)
                         if class_id == 67 and confidence > 0.6:
                             x1, y1, x2, y2 = box.xyxy[0].tolist()
                             x, y = int(x1), int(y1)
                             w, h = int(x2 - x1), int(y2 - y1)
                             
-                            # Update detection data
                             self.detection_data.update({
                                 'phone': 1,
-                                'phone_x': x + w//2,  # Center X
-                                'phone_y': y + h//2,  # Center Y
+                                'phone_x': x, 
+                                'phone_y': y, 
                                 'phone_w': w,
                                 'phone_h': h,
                                 'phone_con': round(confidence, 2)
                             })
                             
-                            # Draw bounding box
                             cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 2)
                             cv2.putText(frame, f'Phone ({confidence:.2f})', (x, y-10), 
                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 1)
                             return
             
-            # No phone detected
             self.detection_data.update({
                 'phone': 0, 'phone_x': 0, 'phone_y': 0,
                 'phone_w': 0, 'phone_h': 0, 'phone_con': 0.0
@@ -691,12 +617,10 @@ class CameraDetectionSystem:
         try:
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
-            # Edge detection
             edges = cv2.Canny(gray, 50, 150)
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
             edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, kernel)
             
-            # Find contours
             contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             best_phone = None
@@ -706,12 +630,10 @@ class CameraDetectionSystem:
                 x, y, w, h = cv2.boundingRect(contour)
                 area = cv2.contourArea(contour)
                 
-                # Phone-like criteria
                 if (area > 1500 and area < 20000 and 
-                    1.5 < h/w < 3.5 and  # Phone aspect ratio
+                    1.5 < h/w < 3.5 and  
                     40 < w < 250 and 80 < h < 400):
                     
-                    # Calculate score based on geometric properties
                     aspect_ratio = h / w
                     rect_area = w * h
                     extent = area / rect_area if rect_area > 0 else 0
@@ -727,8 +649,8 @@ class CameraDetectionSystem:
                 
                 self.detection_data.update({
                     'phone': 1,
-                    'phone_x': x + w//2,
-                    'phone_y': y + h//2,
+                    'phone_x': x,
+                    'phone_y': y,
                     'phone_w': w,
                     'phone_h': h,
                     'phone_con': round(confidence, 2)
@@ -763,7 +685,6 @@ class CameraDetectionSystem:
         self.collected_data.clear()
         self.collection_start_time = time.time()
         
-        # Start collection thread
         collection_thread = threading.Thread(target=self.data_collection_worker)
         collection_thread.daemon = True
         collection_thread.start()
@@ -776,21 +697,18 @@ class CameraDetectionSystem:
             if not self.data_collection_active:
                 break
             
-            # Wait for next second
             target_time = start_time + (second + 1)
             current_time = time.time()
             
             if current_time < target_time:
                 time.sleep(target_time - current_time)
             
-            # Collect current detection data
             data_snapshot = self.detection_data.copy()
             data_snapshot['timestamp'] = time.time()
             self.collected_data.append(data_snapshot)
             
             print(f"📊 Collected data point {second + 1}/10")
         
-        # After 10 seconds, process and predict
         if self.data_collection_active:
             self.process_collected_data()
         
@@ -804,13 +722,12 @@ class CameraDetectionSystem:
         
         print(f"\n📊 Processing {len(self.collected_data)} data points...")
         
-        # Convert to DataFrame for easier processing
         df = pd.DataFrame(list(self.collected_data))
         
-        # Calculate averages for numerical features
         numerical_features = [
             'no_of_face', 'face_x', 'face_y', 'face_w', 'face_h', 'face_con',
-            'no_of_hands', 'pose_x', 'pose_y', 'phone', 'phone_x', 
+            'no_of_hand', 
+            'pose_x', 'pose_y', 'phone', 'phone_x', 
             'phone_y', 'phone_w', 'phone_h', 'phone_con'
         ]
         
@@ -822,15 +739,13 @@ class CameraDetectionSystem:
             else:
                 averaged_data[feature] = 0
         
-        # For categorical features like 'pose', use mode (most frequent)
         pose_values = df['pose'].tolist()
         if pose_values:
             try:
-                # Get the most frequent pose
                 pose_modes = multimode(pose_values)
-                averaged_data['pose'] = pose_modes[0]  # Take first mode if multiple
+                averaged_data['pose'] = pose_modes[0] 
             except:
-                averaged_data['pose'] = 'Forward'  # Default
+                averaged_data['pose'] = 'Forward' 
         else:
             averaged_data['pose'] = 'Forward'
         
@@ -841,21 +756,26 @@ class CameraDetectionSystem:
             else:
                 print(f"  {key}: {value}")
         
-        # Make prediction using ML model
         if self.attention_model.is_trained:
             prediction, probability = self.attention_model.predict_attention(averaged_data)
             
             if prediction is not None:
-                attention_status = "ATTENTIVE" if prediction == 1 else "NOT ATTENTIVE"
-                confidence = probability if prediction == 1 else (1 - probability)
+                attention_status = "INATTENTIVE" if prediction == 1 else "ATTENTIVE"
+                
+                if prediction == 1:
+                    confidence = probability
+                    confidence_type = "inattentive"
+                else:
+                    confidence = 1 - probability 
+                    confidence_type = "attentive"
                 
                 print(f"\n🎯 ATTENTION PREDICTION:")
                 print(f"📊 Status: {attention_status}")
-                print(f"📊 Confidence: {confidence:.1%}")
-                print(f"📊 Raw Prediction: {prediction}")
-                print(f"📊 Probability (Attentive): {probability:.3f}")
+                print(f"📊 Confidence: {confidence:.1%} ({confidence_type})")
+                print(f"📊 Raw Prediction: {prediction} (0=Attentive, 1=Inattentive)")
+                print(f"📊 Model Probability (Inattentive): {probability:.3f}")
+                print(f"📊 Model Probability (Attentive): {1-probability:.3f}")
                 
-                # Save prediction result
                 self.save_prediction_result(averaged_data, prediction, probability)
                 
             else:
@@ -867,12 +787,24 @@ class CameraDetectionSystem:
         """Save prediction result to file"""
         timestamp = datetime.now().isoformat()
         
+        attention_status = "INATTENTIVE" if prediction == 1 else "ATTENTIVE"
+        
+        if prediction == 1:
+            probability_inattentive = float(probability)
+            probability_attentive = float(1 - probability)
+        else:
+            probability_inattentive = float(probability)
+            probability_attentive = float(1 - probability)
+        
         result_data = {
             'timestamp': timestamp,
             'averaged_features': averaged_data,
             'prediction': int(prediction),
-            'probability_attentive': float(probability),
-            'attention_status': "ATTENTIVE" if prediction == 1 else "NOT ATTENTIVE",
+            'prediction_meaning': "1=Inattentive, 0=Attentive", 
+            'probability_inattentive': probability_inattentive,  
+            'probability_attentive': probability_attentive,      
+            'attention_status': attention_status,                
+            'confidence_percentage': f"{max(probability_attentive, probability_inattentive):.1%}",  
             'data_points_collected': len(self.collected_data)
         }
         
@@ -918,7 +850,7 @@ class CameraDetectionSystem:
         print(f"face_w: {data['face_w']}")
         print(f"face_h: {data['face_h']}")
         print(f"face_con: {data['face_con']}")
-        print(f"no_of_hands: {data['no_of_hands']}")
+        print(f"no_of_hand: {data['no_of_hand']}")
         print(f"pose: {data['pose']}")
         print(f"pose_x: {data['pose_x']}")
         print(f"pose_y: {data['pose_y']}")
@@ -952,16 +884,13 @@ class CameraDetectionSystem:
                 print("❌ Error reading frame")
                 break
             
-            # Flip frame horizontally for mirror effect
             frame = cv2.flip(frame, 1)
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
             
-            # Perform detections
             self.detect_faces(frame, gray)
             self.detect_hands(frame)
             self.detect_phone(frame)
             
-            # Calculate FPS
             fps_counter += 1
             if time.time() - fps_timer >= 1.0:
                 fps = fps_counter
@@ -970,11 +899,10 @@ class CameraDetectionSystem:
             else:
                 fps = fps_counter
             
-            # Display info on frame
             status_info = [
                 f"FPS: {fps}",
                 f"Face: {'✅' if self.face_detector_available else '❌'} ({self.detection_data['no_of_face']})",
-                f"Hands: {'✅' if self.hands_detector_available else '❌'} ({self.detection_data['no_of_hands']}) [{self.hand_detection_method}]",
+                f"Hands: {'✅' if self.hands_detector_available else '❌'} ({self.detection_data['no_of_hand']}) [{self.hand_detection_method}]",
                 f"Phone: {'✅' if self.phone_detector_available else '❌'} ({'Yes' if self.detection_data['phone'] else 'No'})",
                 f"Pose: {self.detection_data['pose']}",
                 f"ML Model: {'✅' if self.attention_model.is_trained else '❌'}",
@@ -983,27 +911,22 @@ class CameraDetectionSystem:
                 f"Model: {self.model_type.upper()}"
             ]
             
-            # Show collection progress if active
             if self.data_collection_active:
                 elapsed = time.time() - self.collection_start_time
                 remaining = max(0, 10 - elapsed)
                 progress = f"Collection: {len(self.collected_data)}/10 ({remaining:.1f}s left)"
                 status_info.append(progress)
                 
-                # Draw progress bar
                 bar_width = 300
                 bar_height = 20
                 bar_x = 10
                 bar_y = frame.shape[0] - 40
                 
-                # Background
                 cv2.rectangle(frame, (bar_x, bar_y), (bar_x + bar_width, bar_y + bar_height), (0, 0, 0), -1)
                 
-                # Progress
                 progress_width = int((len(self.collected_data) / 10) * bar_width)
                 cv2.rectangle(frame, (bar_x, bar_y), (bar_x + progress_width, bar_y + bar_height), (0, 255, 0), -1)
                 
-                # Text
                 cv2.putText(frame, f"Collecting: {len(self.collected_data)}/10", 
                            (bar_x + 5, bar_y + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
@@ -1011,10 +934,8 @@ class CameraDetectionSystem:
                 cv2.putText(frame, text, (10, 30 + i*25), 
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
             
-            # Show frame
             cv2.imshow('AI Attention Detection System', frame)
             
-            # Handle keyboard input
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
                 break
@@ -1035,7 +956,6 @@ class CameraDetectionSystem:
                 else:
                     print("⚠️ No data collection in progress")
             elif key == ord('h'):
-                # Toggle hand detection method
                 if self.hand_detection_method == 'yolov8_pose':
                     self.hand_detection_method = 'fallback'
                     print("🔄 Switched to fallback hand detection")
@@ -1088,7 +1008,6 @@ def main():
     print(f"🐍 Python version: {sys.version}")
     print("=" * 60)
     
-    # First, check dataset structure
     print("\n🔍 Dataset Structure Check:")
     check_dataset_structure()
     print("=" * 60)
@@ -1096,7 +1015,6 @@ def main():
     try:
         detector = CameraDetectionSystem()
         
-        # Load and train the ML model
         print("\n🧠 Loading Machine Learning Model...")
         if detector.attention_model.load_and_train_model():
             print("✅ ML model ready for predictions!")
@@ -1107,7 +1025,6 @@ def main():
             print("   2. File has a 'label' column")
             print("   3. File has feature columns (numeric data)")
         
-        # Show initialization results
         working_models = sum([
             detector.face_detector_available,
             detector.hands_detector_available,
