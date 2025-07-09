@@ -16,6 +16,7 @@ from sklearn.preprocessing import OneHotEncoder
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
 from sklearn.metrics import roc_auc_score, classification_report
+import pickle
 
 class AttentionDetectionModel:
     """Machine Learning Model for Attention Prediction"""
@@ -139,6 +140,32 @@ class AttentionDetectionModel:
             
             print("✅ Model trained successfully!")
             self.is_trained = True
+
+            # Save model as .pkl
+            with open("trained_attention_model.pkl", "wb") as pkl_file:
+                pickle.dump(self.model_pipeline, pkl_file)
+            print("💾 Model saved as 'trained_attention_model.pkl'")
+
+            # Save model metadata/config as JSON
+            model_metadata = {
+                "model_type": "RandomForestClassifier",
+                "n_estimators": 100,
+                "max_depth": 10,
+                "min_samples_split": 5,
+                "feature_columns": self.feature_columns,
+                "categorical_columns": categorical_cols,
+                "numerical_columns": numerical_cols,
+                "label_description": {
+                    "0": "Attentive",
+                    "1": "Inattentive"
+                },
+                "created_at": datetime.now().isoformat()
+            }
+
+            with open("trained_attention_model_metadata.json", "w") as json_file:
+                json.dump(model_metadata, json_file, indent=2)
+            print("💾 Model metadata saved as 'trained_attention_model_metadata.json'")
+
             return True
             
         except FileNotFoundError:

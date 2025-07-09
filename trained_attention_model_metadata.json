@@ -1,0 +1,49 @@
+{
+  "model_type": "RandomForestClassifier",
+  "n_estimators": 100,
+  "max_depth": 10,
+  "min_samples_split": 5,
+  "feature_columns": [
+    "no_of_face",
+    "face_x",
+    "face_y",
+    "face_w",
+    "face_h",
+    "face_con",
+    "no_of_hand",
+    "pose",
+    "pose_x",
+    "pose_y",
+    "phone",
+    "phone_x",
+    "phone_y",
+    "phone_w",
+    "phone_h",
+    "phone_con"
+  ],
+  "categorical_columns": [
+    "pose"
+  ],
+  "numerical_columns": [
+    "no_of_face",
+    "face_x",
+    "face_y",
+    "face_w",
+    "face_h",
+    "face_con",
+    "no_of_hand",
+    "pose_x",
+    "pose_y",
+    "phone",
+    "phone_x",
+    "phone_y",
+    "phone_w",
+    "phone_h",
+    "phone_con"
+  ],
+  "label_description": {
+    "0": "Attentive",
+    "1": "Inattentive"
+  },
+  "created_at": "2025-07-09T20:44:31.418171"
+}
